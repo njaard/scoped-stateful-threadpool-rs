@@ -1,6 +1,6 @@
-extern crate scoped_threadpool;
+extern crate scoped_stateful_threadpool;
 
-use scoped_threadpool::Pool;
+use scoped_stateful_threadpool::Pool;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::atomic::{AtomicBool, ATOMIC_BOOL_INIT};
 use std::panic::AssertUnwindSafe;
@@ -68,14 +68,14 @@ fn demo_heap_allocated() {
 
 pub fn kernel(r: &PositivelyAtomic, saw_zero: &AtomicBool) {
     // Create a threadpool holding 4 threads
-    let mut pool = Pool::new(4);
+    let mut pool = Pool::new(4, || ());
 
     // Use the threads as scoped threads that can
     // reference anything outside this closure
     pool.scoped(|scope| {
         // Create references to each element in the vector ...
         for _ in 0..4 {
-            scope.execute(move || {
+            scope.execute(move |_| {
                 for _ in 0..100000 {
                     let v = r.load();
                     if v == 0 {

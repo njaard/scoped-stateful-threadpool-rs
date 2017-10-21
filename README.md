@@ -1,11 +1,7 @@
-scoped-threadpool-rs
+scoped-stateful-threadpool-rs
 ==============
 
-[![Travis-CI Status](https://travis-ci.org/Kimundi/scoped-threadpool-rs.png?branch=master)](https://travis-ci.org/Kimundi/scoped-threadpool-rs)
-
-A library for scoped and cached threadpools.
-
-For more details, see the [docs](http://kimundi.github.io/scoped-threadpool-rs/scoped_threadpool/index.html).
+A library for scoped and cached threadpools **that keep a state so that you don't need a connection pool**.
 
 # Getting Started
 
@@ -14,25 +10,24 @@ Add the following dependency to your Cargo manifest to get the latest version of
 ```toml
 [dependencies]
 
-scoped_threadpool = "0.1.*"
+scoped_stateful_threadpool = "0.1.*"
 ```
-
 To always get the latest version, add this git repository to your
 Cargo manifest:
 
 ```toml
-[dependencies.scoped_threadpool]
-git = "https://github.com/Kimundi/scoped-threadpool-rs"
+[dependencies.scoped_scoped_threadpool]
+git = "https://github.com/njaard/scoped-stateful-threadpool-rs"
 ```
 # Example
 
 ```rust
-extern crate scoped_threadpool;
+extern crate scoped_stateful_threadpool;
 use scoped_threadpool::Pool;
 
 fn main() {
     // Create a threadpool holding 4 threads
-    let mut pool = Pool::new(4);
+    let mut pool = Pool::new(4, || 0);
 
     let mut vec = vec![0, 1, 2, 3, 4, 5, 6, 7];
 
@@ -42,7 +37,8 @@ fn main() {
         // Create references to each element in the vector ...
         for e in &mut vec {
             // ... and add 1 to it in a seperate thread
-            scoped.execute(move || {
+            scoped.execute(move |state| {
+                *state += 1; // I can change the state
                 *e += 1;
             });
         }

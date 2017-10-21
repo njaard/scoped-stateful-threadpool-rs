@@ -14,12 +14,12 @@
 //! # Examples:
 //!
 //! ```rust
-//! extern crate scoped_threadpool;
-//! use scoped_threadpool::Pool;
+//! extern crate scoped_stateful_threadpool;
+//! use scoped_stateful_threadpool::Pool;
 //!
 //! fn main() {
 //!     // Create a threadpool holding 4 threads
-//!     let mut pool = Pool::new(4);
+//!     let mut pool = Pool::new(4, || 1);
 //!
 //!     let mut vec = vec![0, 1, 2, 3, 4, 5, 6, 7];
 //!
@@ -29,8 +29,8 @@
 //!         // Create references to each element in the vector ...
 //!         for e in &mut vec {
 //!             // ... and add 1 to it in a seperate thread
-//!             scope.execute(move || {
-//!                 *e += 1;
+//!             scope.execute(move |v| {
+//!                 *e += *v;
 //!             });
 //!         }
 //!     });
@@ -57,24 +57,24 @@ use std::sync::{Arc, Mutex};
 use std::marker::PhantomData;
 use std::mem;
 
-enum Message {
-    NewJob(Thunk<'static>),
+enum Message<State> {
+    NewJob(Thunk<'static, State>),
     Join,
 }
 
-trait FnBox {
-    fn call_box(self: Box<Self>);
+trait FnBox<State> {
+    fn call_box(self: Box<Self>, state : &mut State);
 }
 
-impl<F: FnOnce()> FnBox for F {
-    fn call_box(self: Box<F>) {
-        (*self)()
+impl<F: FnOnce(&mut State), State> FnBox<State> for F {
+    fn call_box(self: Box<F>, state : &mut State) {
+        (*self)(state)
     }
 }
 
-type Thunk<'a> = Box<FnBox + Send + 'a>;
+type Thunk<'a, State> = Box<FnBox<State> + Send + 'a>;
 
-impl Drop for Pool {
+impl<State> Drop for Pool<State> {
     fn drop(&mut self) {
         self.job_sender = None;
     }
@@ -82,9 +82,9 @@ impl Drop for Pool {
 
 /// A threadpool that acts as a handle to a number
 /// of threads spawned at construction.
-pub struct Pool {
+pub struct Pool<State> {
     threads: Vec<ThreadData>,
-    job_sender: Option<Sender<Message>>
+    job_sender: Option<Sender<Message<State>>>
 }
 
 struct ThreadData {
@@ -93,11 +93,17 @@ struct ThreadData {
     thread_sync_tx: SyncSender<()>,
 }
 
-impl Pool {
+impl<'pool, State> Pool<State> {
     /// Construct a threadpool with the given number of threads.
     /// Minimum value is `1`.
-    pub fn new(n: u32) -> Pool {
+    pub fn new<StateCreator>(n: u32, state_creator : StateCreator) -> Self
+        where StateCreator : 'static + Send + Sync + Fn() -> State,
+            State : 'static {
         assert!(n >= 1);
+
+        let state_creator = unsafe {
+            mem::transmute::<&StateCreator, &'static StateCreator>(&state_creator)
+        };
 
         let (job_sender, job_receiver) = channel();
         let job_receiver = Arc::new(Mutex::new(job_receiver));
@@ -114,6 +120,8 @@ impl Pool {
                 sync_channel::<()>(0);
 
             let thread = thread::spawn(move || {
+                let mut state = state_creator();
+
                 loop {
                     let message = {
                         // Only lock jobs for the time it takes
@@ -124,7 +132,7 @@ impl Pool {
 
                     match message {
                         Ok(Message::NewJob(job)) => {
-                            job.call_box();
+                            job.call_box(&mut state);
                         }
                         Ok(Message::Join) => {
                             // Syncronize/Join with pool.
@@ -171,8 +179,8 @@ impl Pool {
     ///
     /// This method will block until the closure and all its jobs have
     /// run to completion.
-    pub fn scoped<'pool, 'scope, F, R>(&'pool mut self, f: F) -> R
-        where F: FnOnce(&Scope<'pool, 'scope>) -> R
+    pub fn scoped<'scope, F, R>(&'pool mut self, f: F) -> R
+        where F: FnOnce(&Scope<'pool, 'scope, State>) -> R
     {
         let scope = Scope {
             pool: self,
@@ -190,25 +198,25 @@ impl Pool {
 /////////////////////////////////////////////////////////////////////////////
 
 /// Handle to the scope during which the threadpool is borrowed.
-pub struct Scope<'pool, 'scope> {
-    pool: &'pool mut Pool,
+pub struct Scope<'pool, 'scope, State : 'pool> {
+    pool: &'pool mut Pool<State>,
     // The 'scope needs to be invariant... it seems?
     _marker: PhantomData<::std::cell::Cell<&'scope mut ()>>,
 }
 
-impl<'pool, 'scope> Scope<'pool, 'scope> {
+impl<'pool, 'scope, State> Scope<'pool, 'scope, State> {
     /// Execute a job on the threadpool.
     ///
     /// The body of the closure will be send to one of the
     /// internal threads, and this method itself will not wait
     /// for its completion.
-    pub fn execute<F>(&self, f: F) where F: FnOnce() + Send + 'scope {
+    pub fn execute<F>(&self, f: F) where F: FnOnce(&mut State) + Send + 'scope {
         self.execute_(f)
     }
 
-    fn execute_<F>(&self, f: F) where F: FnOnce() + Send + 'scope {
+    fn execute_<F>(&self, f: F) where F: FnOnce(&mut State) + Send + 'scope {
         let b = unsafe {
-            mem::transmute::<Thunk<'scope>, Thunk<'static>>(Box::new(f))
+            mem::transmute::<Thunk<'scope, State>, Thunk<'static, State>>(Box::new(f))
         };
         self.pool.job_sender.as_ref().unwrap().send(Message::NewJob(b)).unwrap();
     }
@@ -243,7 +251,7 @@ impl<'pool, 'scope> Scope<'pool, 'scope> {
     }
 }
 
-impl<'pool, 'scope> Drop for Scope<'pool, 'scope> {
+impl<'pool, 'scope, State> Drop for Scope<'pool, 'scope, State> {
     fn drop(&mut self) {
         self.join_all();
     }
@@ -266,13 +274,13 @@ mod tests {
 
     #[test]
     fn smoketest() {
-        let mut pool = Pool::new(4);
+        let mut pool = Pool::new(4, || "state");
 
         for i in 1..7 {
             let mut vec = vec![0, 1, 2, 3, 4];
             pool.scoped(|s| {
                 for e in vec.iter_mut() {
-                    s.execute(move || {
+                    s.execute(move |_| {
                         *e += i;
                     });
                 }
@@ -290,9 +298,9 @@ mod tests {
     #[test]
     #[should_panic]
     fn thread_panic() {
-        let mut pool = Pool::new(4);
+        let mut pool = Pool::new(4, || "state");
         pool.scoped(|scoped| {
-            scoped.execute(move || {
+            scoped.execute(move |_| {
                 panic!()
             });
         });
@@ -301,7 +309,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn scope_panic() {
-        let mut pool = Pool::new(4);
+        let mut pool = Pool::new(4, || "state");
         pool.scoped(|_scoped| {
             panic!()
         });
@@ -310,32 +318,32 @@ mod tests {
     #[test]
     #[should_panic]
     fn pool_panic() {
-        let _pool = Pool::new(4);
+        let _pool = Pool::new(4, || "state");
         panic!()
     }
 
     #[test]
     fn join_all() {
-        let mut pool = Pool::new(4);
+        let mut pool = Pool::new(4, || "state");
 
         let (tx_, rx) = sync::mpsc::channel();
 
         pool.scoped(|scoped| {
             let tx = tx_.clone();
-            scoped.execute(move || {
+            scoped.execute(move |_| {
                 sleep_ms(1000);
                 tx.send(2).unwrap();
             });
 
             let tx = tx_.clone();
-            scoped.execute(move || {
+            scoped.execute(move |_| {
                 tx.send(1).unwrap();
             });
 
             scoped.join_all();
 
             let tx = tx_.clone();
-            scoped.execute(move || {
+            scoped.execute(move |_| {
                 tx.send(3).unwrap();
             });
         });
@@ -357,16 +365,16 @@ mod tests {
         // Use a thread here to handle the expected panic from the pool. Should
         // be switched to use panic::recover instead when it becomes stable.
         let handle = thread::spawn(move || {
-            let mut pool = Pool::new(8);
+            let mut pool = Pool::new(8, || "state");
             let _on_scope_end = OnScopeEnd(tx_.clone());
             pool.scoped(|scoped| {
-                scoped.execute(move || {
+                scoped.execute(move |_| {
                     sleep_ms(100);
                     panic!();
                 });
                 for _ in 1..8 {
                     let tx = tx_.clone();
-                    scoped.execute(move || {
+                    scoped.execute(move |_| {
                         sleep_ms(200);
                         tx.send(0).unwrap();
                     });
@@ -385,9 +393,9 @@ mod tests {
 
     #[test]
     fn safe_execute() {
-        let mut pool = Pool::new(4);
+        let mut pool = Pool::new(4, || "str");
         pool.scoped(|scoped| {
-            scoped.execute(move || {
+            scoped.execute(move |_| {
             });
         });
     }
