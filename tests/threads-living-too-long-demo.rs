@@ -68,7 +68,7 @@ fn demo_heap_allocated() {
 
 pub fn kernel(r: &PositivelyAtomic, saw_zero: &AtomicBool) {
     // Create a threadpool holding 4 threads
-    let mut pool = Pool::new(4, || ());
+    let mut pool = Pool::new(4, &|| ());
 
     // Use the threads as scoped threads that can
     // reference anything outside this closure

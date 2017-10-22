@@ -19,7 +19,7 @@
 //!
 //! fn main() {
 //!     // Create a threadpool holding 4 threads
-//!     let mut pool = Pool::new(4, || 1);
+//!     let mut pool = Pool::new(4, &|| 1);
 //!
 //!     let mut vec = vec![0, 1, 2, 3, 4, 5, 6, 7];
 //!
@@ -72,6 +72,8 @@ impl<F: FnOnce(&mut State), State> FnBox<State> for F {
     }
 }
 
+type StateCreatorFn<'a, State> = Box<Fn()-> State + Send + 'a>;
+
 type Thunk<'a, State> = Box<FnBox<State> + Send + 'a>;
 
 impl<State> Drop for Pool<State> {
@@ -93,17 +95,25 @@ struct ThreadData {
     thread_sync_tx: SyncSender<()>,
 }
 
-impl<'pool, State> Pool<State> {
+struct StateGenerator<Val>(*const Val);
+
+unsafe impl<Val> Send for StateGenerator<Val> {}
+unsafe impl<Val> Sync for StateGenerator<Val> {}
+
+
+impl<'pool, State> Pool<State>
+    where State : 'static + Send {
     /// Construct a threadpool with the given number of threads.
     /// Minimum value is `1`.
-    pub fn new<StateCreator>(n: u32, state_creator : StateCreator) -> Self
-        where StateCreator : 'static + Send + Sync + Fn() -> State,
-            State : 'static {
+    pub fn new<'sc, StateCreator>(n: u32, state_creator : &'sc StateCreator) -> Self
+        where StateCreator : Fn() -> State + Send + Sync {
         assert!(n >= 1);
 
-        let state_creator = unsafe {
-            mem::transmute::<&StateCreator, &'static StateCreator>(&state_creator)
-        };
+        let state_creator = &unsafe {
+            mem::transmute::<StateCreatorFn<'sc, State>, StateCreatorFn<'static, State>>(
+                Box::new(state_creator)
+            )
+        } as *const StateCreatorFn<'static, State>;
 
         let (job_sender, job_receiver) = channel();
         let job_receiver = Arc::new(Mutex::new(job_receiver));
@@ -119,8 +129,10 @@ impl<'pool, State> Pool<State> {
             let (thread_sync_tx, thread_sync_rx) =
                 sync_channel::<()>(0);
 
+            let state_creator = StateGenerator(state_creator);
+            let mut state = unsafe {(*state_creator.0)()};
+
             let thread = thread::spawn(move || {
-                let mut state = state_creator();
 
                 loop {
                     let message = {
@@ -274,7 +286,7 @@ mod tests {
 
     #[test]
     fn smoketest() {
-        let mut pool = Pool::new(4, || "state");
+        let mut pool = Pool::new(4, &|| "state");
 
         for i in 1..7 {
             let mut vec = vec![0, 1, 2, 3, 4];
@@ -298,7 +310,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn thread_panic() {
-        let mut pool = Pool::new(4, || "state");
+        let mut pool = Pool::new(4, &|| "state");
         pool.scoped(|scoped| {
             scoped.execute(move |_| {
                 panic!()
@@ -309,7 +321,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn scope_panic() {
-        let mut pool = Pool::new(4, || "state");
+        let mut pool = Pool::new(4, &|| "state");
         pool.scoped(|_scoped| {
             panic!()
         });
@@ -318,13 +330,13 @@ mod tests {
     #[test]
     #[should_panic]
     fn pool_panic() {
-        let _pool = Pool::new(4, || "state");
+        let _pool = Pool::new(4, &|| "state");
         panic!()
     }
 
     #[test]
     fn join_all() {
-        let mut pool = Pool::new(4, || "state");
+        let mut pool = Pool::new(4, &|| "state");
 
         let (tx_, rx) = sync::mpsc::channel();
 
@@ -365,7 +377,7 @@ mod tests {
         // Use a thread here to handle the expected panic from the pool. Should
         // be switched to use panic::recover instead when it becomes stable.
         let handle = thread::spawn(move || {
-            let mut pool = Pool::new(8, || "state");
+            let mut pool = Pool::new(8, &|| "state");
             let _on_scope_end = OnScopeEnd(tx_.clone());
             pool.scoped(|scoped| {
                 scoped.execute(move |_| {
@@ -393,7 +405,7 @@ mod tests {
 
     #[test]
     fn safe_execute() {
-        let mut pool = Pool::new(4, || "str");
+        let mut pool = Pool::new(4, &|| "str");
         pool.scoped(|scoped| {
             scoped.execute(move |_| {
             });
