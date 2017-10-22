@@ -1,5 +1,10 @@
 //! This crate provides a stable, safe and scoped threadpool.
 //!
+//! This crate differs from the original `scoped_threadpool` in that
+//! each thread can keep a state. Specifically, this allows each thread
+//! to hold a persistent database connection or a resource
+//! with a costly setup.
+//!
 //! It can be used to execute a number of short-lived jobs in parallel
 //! without the need to respawn the underlying threads.
 //!
@@ -72,7 +77,6 @@ impl<F: FnOnce(&mut State), State> FnBox<State> for F {
     }
 }
 
-type StateCreatorFn<'a, State> = Box<Fn()-> State + Send + 'a>;
 
 type Thunk<'a, State> = Box<FnBox<State> + Send + 'a>;
 
@@ -95,6 +99,7 @@ struct ThreadData {
     thread_sync_tx: SyncSender<()>,
 }
 
+type StateCreatorFn<'a, State> = Box<Fn()-> State + 'a>;
 struct StateGenerator<Val>(*const Val);
 
 unsafe impl<Val> Send for StateGenerator<Val> {}
@@ -105,8 +110,14 @@ impl<'pool, State> Pool<State>
     where State : 'static + Send {
     /// Construct a threadpool with the given number of threads.
     /// Minimum value is `1`.
+    ///
+    /// For each thread, call the build function and store its
+    /// result. It will be passed to scoped closure.
+    ///
+    /// The build function is called from the current thread
+    /// (and not the spawned threads).
     pub fn new<'sc, StateCreator>(n: u32, state_creator : &'sc StateCreator) -> Self
-        where StateCreator : Fn() -> State + Send + Sync {
+        where StateCreator : Fn() -> State {
         assert!(n >= 1);
 
         let state_creator = &unsafe {
