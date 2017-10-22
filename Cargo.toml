@@ -3,12 +3,12 @@ name = "scoped_stateful_threadpool"
 version = "0.1.8"
 authors = ["Kalle Samuels <ks@ks.ax>", "Marvin Löbel <loebel.marvin@gmail.com>"]
 license = "MIT"
-
+documentation = "https://docs.rs/scoped_stateful_threadpool/"
 description = "A library for scoped and cached threadpools that keep a state."
 readme = "README.md"
 
 repository = "https://github.com/njaard/scoped-stateful-threadpool-rs"
-keywords = ["thread", "scoped", "pool", "cached", "threadpool", "state", "stateful", "connection", "pool"]
+keywords = ["thread", "scoped", "pool", "cached", "threadpool", "state", "stateful", "connection", "connectionpool"]
 
 [dev-dependencies]
 lazy_static = "0.2"
