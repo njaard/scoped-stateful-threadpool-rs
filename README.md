@@ -16,18 +16,18 @@ To always get the latest version, add this git repository to your
 Cargo manifest:
 
 ```toml
-[dependencies.scoped_scoped_threadpool]
+[dependencies.scoped_stateful_threadpool]
 git = "https://github.com/njaard/scoped-stateful-threadpool-rs"
 ```
 # Example
 
 ```rust
 extern crate scoped_stateful_threadpool;
-use scoped_threadpool::Pool;
+use scoped_stateful_threadpool::Pool;
 
 fn main() {
     // Create a threadpool holding 4 threads
-    let mut pool = Pool::new(4, || 0);
+    let mut pool = Pool::new(4, &|| 0);
 
     let mut vec = vec![0, 1, 2, 3, 4, 5, 6, 7];
 
