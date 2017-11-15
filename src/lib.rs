@@ -99,13 +99,6 @@ struct ThreadData {
     thread_sync_tx: SyncSender<()>,
 }
 
-type StateCreatorFn<'a, State> = Box<Fn()-> State + 'a>;
-struct StateGenerator<Val>(*const Val);
-
-unsafe impl<Val> Send for StateGenerator<Val> {}
-unsafe impl<Val> Sync for StateGenerator<Val> {}
-
-
 impl<'pool, State> Pool<State>
     where State : 'static + Send {
     /// Construct a threadpool with the given number of threads.
@@ -116,15 +109,9 @@ impl<'pool, State> Pool<State>
     ///
     /// The build function is called from the current thread
     /// (and not the spawned threads).
-    pub fn new<'sc, StateCreator>(n: u32, state_creator : &'sc StateCreator) -> Self
+    pub fn new<StateCreator>(n: u32, state_creator : &StateCreator) -> Self
         where StateCreator : Fn() -> State {
         assert!(n >= 1);
-
-        let state_creator = &unsafe {
-            mem::transmute::<StateCreatorFn<'sc, State>, StateCreatorFn<'static, State>>(
-                Box::new(state_creator)
-            )
-        } as *const StateCreatorFn<'static, State>;
 
         let (job_sender, job_receiver) = channel();
         let job_receiver = Arc::new(Mutex::new(job_receiver));
@@ -140,8 +127,7 @@ impl<'pool, State> Pool<State>
             let (thread_sync_tx, thread_sync_rx) =
                 sync_channel::<()>(0);
 
-            let state_creator = StateGenerator(state_creator);
-            let mut state = unsafe {(*state_creator.0)()};
+            let mut state = state_creator();
 
             let thread = thread::spawn(move || {
 
